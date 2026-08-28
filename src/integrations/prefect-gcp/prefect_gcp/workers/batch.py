@@ -16,6 +16,7 @@ from typing import (
     Callable,
     Dict,
     Final,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -32,7 +33,7 @@ from google.api_core.exceptions import (
     TooManyRequests,
 )
 from jsonpatch import JsonPatch
-from pydantic import Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from tenacity import (
     Retrying,
     retry_if_exception,
@@ -170,6 +171,30 @@ def _get_base_job_body() -> Dict[str, Any]:
     }
 
 
+class NFSVolume(BaseModel):
+    """An NFS volume to mount into a GCP Batch task's container."""
+
+    server: str = Field(description="The IP address or hostname of the NFS server.")
+    remote_path: str = Field(
+        description="The path exported by the NFS server to mount."
+    )
+    mount_path: str = Field(
+        description="The path to mount the volume at inside the container."
+    )
+
+
+def _nfs_volumes_to_job_body_volumes(
+    volumes: "Iterable[NFSVolume]",
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "nfs": {"server": v.server, "remote_path": v.remote_path},
+            "mount_path": v.mount_path,
+        }
+        for v in volumes
+    ]
+
+
 class GCPBatchJobConfiguration(BaseJobConfiguration):
     """
     The configuration for the GCP Batch worker.
@@ -239,6 +264,14 @@ class GCPBatchJobConfiguration(BaseJobConfiguration):
             "GCP Batch will actively try to mark it failed."
         ),
     )
+    nfs_volumes: List[NFSVolume] = Field(
+        default_factory=list,
+        title="NFS Volumes",
+        description=(
+            "NFS volumes to mount into the job's containers. Each entry mounts "
+            "the given remote path from an NFS server at the given mount path."
+        ),
+    )
     _job_name: Optional[str] = PrivateAttr(default=None)
 
     @property
@@ -297,6 +330,7 @@ class GCPBatchJobConfiguration(BaseJobConfiguration):
         self._populate_compute_resource()
         self._populate_provisioning_model()
         self._populate_max_run_duration()
+        self._populate_volumes()
         self._populate_labels()
 
     def _populate_image_if_not_present(self):
@@ -360,6 +394,17 @@ class GCPBatchJobConfiguration(BaseJobConfiguration):
         """
         task_spec = self.job_body["task_groups"][0]["task_spec"]
         task_spec["max_run_duration"] = f"{self.max_run_duration}s"
+
+    def _populate_volumes(self):
+        """
+        Populates the job body's task spec with any configured NFS volumes.
+        """
+        if not self.nfs_volumes:
+            return
+        task_spec = self.job_body["task_groups"][0]["task_spec"]
+        task_spec.setdefault("volumes", []).extend(
+            _nfs_volumes_to_job_body_volumes(self.nfs_volumes)
+        )
 
     def _populate_labels(self):
         """
@@ -534,6 +579,14 @@ class GCPBatchVariables(BaseVariables):
         default=False,
         title="Keep Job After Completion",
         description="Keep the completed GCP Batch job on Google Cloud Platform.",
+    )
+    nfs_volumes: List[NFSVolume] = Field(
+        default_factory=list,
+        title="NFS Volumes",
+        description=(
+            "NFS volumes to mount into the job's containers. Each entry mounts "
+            "the given remote path from an NFS server at the given mount path."
+        ),
     )
 
 

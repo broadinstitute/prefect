@@ -140,6 +140,7 @@ Open the work pool in the Prefect UI and edit its base job template. At minimum,
 | `network` / `subnetwork` | VPC network/subnetwork to run VMs on. |
 | `allowed_locations` | Restrict VMs to specific zones (e.g. `["zones/us-central1-a"]`). Leaving this unset generally improves scheduling speed. |
 | `keep_job` | Keep the completed Batch job in GCP after the flow run finishes, for debugging. |
+| `nfs_volumes` | NFS volumes to mount into the job's containers. Each entry is an object with `server` (the NFS server's IP address or hostname), `remote_path` (the path exported by the NFS server), and `mount_path` (where to mount it inside the container). |
 
 <Warning>
 **Spot VM preemption**
@@ -268,6 +269,32 @@ Each `.submit()` call provisions its own VM (tens of seconds to minutes of cold-
 fine-grained parallel fan-out. For homogeneous parallelism across many small tasks, prefer
 the `GCPBatchWorker`'s native `task_count`/`parallelism`, or another task runner.
 </Note>
+
+### Mounting an NFS volume
+
+Both `GCPBatchWorker` (via the `nfs_volumes` job variable) and `GCPBatchTaskRunner` accept a list
+of NFS volumes to mount into each container. Each entry needs the NFS server's address, the
+remote path it exports, and where to mount that path inside the container:
+
+```python
+from prefect_gcp.task_runners import GCPBatchTaskRunner
+from prefect_gcp.workers.batch import NFSVolume
+from prefect_gcp.context import batch_options
+
+with batch_options(
+    nfs_volumes=[
+        NFSVolume(
+            server="10.0.0.2",
+            remote_path="/exports/data",
+            mount_path="/mnt/data",
+        )
+    ]
+):
+    process.submit(42)
+```
+
+For `GCPBatchWorker`, set the equivalent `nfs_volumes` job variable on the work pool (as a list
+of `{server, remote_path, mount_path}` objects) instead of using `batch_options()`.
 
 If you're fine with subflow-level (rather than task-level) granularity, you can also get
 heterogeneous infrastructure today with zero additional code by decorating separate

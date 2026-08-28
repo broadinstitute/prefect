@@ -63,9 +63,11 @@ from prefect_gcp.settings import GCPBatchWorkerSettings
 from prefect_gcp.utilities import slugify_name
 from prefect_gcp.workers.batch import (
     GCPBatchWorker,
+    NFSVolume,
     _build_transient_retrying,
     _cpu_to_milli,
     _memory_to_mib,
+    _nfs_volumes_to_job_body_volumes,
 )
 
 R = Any
@@ -121,6 +123,9 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
         boot_disk_size_gb: The boot disk size, in GB, for each VM.
         keep_job: Keep completed GCP Batch jobs on Google Cloud Platform, for
             debugging.
+        nfs_volumes: NFS volumes to mount into each task's container. Each entry
+            mounts the given remote path from an NFS server at the given mount
+            path.
 
     Any of the options above (other than `result_storage_block`, `region`, and
     `credentials`) can be overridden per task submission using the
@@ -144,6 +149,7 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
         subnetwork: Optional[str] = None,
         boot_disk_size_gb: Optional[int] = None,
         keep_job: bool = False,
+        nfs_volumes: Optional[list[NFSVolume]] = None,
     ):
         _validate_attempt_counts(max_attempts_spot, max_attempts_standard)
 
@@ -162,6 +168,7 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
         self.subnetwork = subnetwork
         self.boot_disk_size_gb = boot_disk_size_gb
         self.keep_job = keep_job
+        self.nfs_volumes = list(nfs_volumes or [])
 
         self._init_kwargs = dict(
             result_storage_block=result_storage_block,
@@ -179,6 +186,7 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
             subnetwork=subnetwork,
             boot_disk_size_gb=boot_disk_size_gb,
             keep_job=keep_job,
+            nfs_volumes=nfs_volumes,
         )
 
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -486,6 +494,7 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
         network = options.get("network", self.network)
         subnetwork = options.get("subnetwork", self.subnetwork)
         boot_disk_size_gb = options.get("boot_disk_size_gb", self.boot_disk_size_gb)
+        nfs_volumes = options.get("nfs_volumes", self.nfs_volumes)
 
         env = get_current_settings().to_environment_variables(exclude_unset=True)
 
@@ -507,36 +516,40 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
                 ],
             }
 
+        task_spec: dict[str, Any] = {
+            "runnables": [
+                {
+                    "container": {
+                        "image_uri": image,
+                        "commands": [
+                            "python",
+                            "-m",
+                            "prefect_gcp.batch_task_entrypoint",
+                            "--task-run-id",
+                            str(task_run_id),
+                            "--entrypoint",
+                            entrypoint,
+                            "--result-storage-block",
+                            self.result_storage_block,
+                        ],
+                    },
+                },
+            ],
+            "compute_resource": {
+                "cpu_milli": _cpu_to_milli(cpu),
+                "memory_mib": _memory_to_mib(memory),
+            },
+            "max_run_duration": f"{max_run_duration}s",
+            "max_retry_count": max_retry_count,
+            "environment": {"variables": env},
+        }
+        if nfs_volumes:
+            task_spec["volumes"] = _nfs_volumes_to_job_body_volumes(nfs_volumes)
+
         return {
             "task_groups": [
                 {
-                    "task_spec": {
-                        "runnables": [
-                            {
-                                "container": {
-                                    "image_uri": image,
-                                    "commands": [
-                                        "python",
-                                        "-m",
-                                        "prefect_gcp.batch_task_entrypoint",
-                                        "--task-run-id",
-                                        str(task_run_id),
-                                        "--entrypoint",
-                                        entrypoint,
-                                        "--result-storage-block",
-                                        self.result_storage_block,
-                                    ],
-                                },
-                            },
-                        ],
-                        "compute_resource": {
-                            "cpu_milli": _cpu_to_milli(cpu),
-                            "memory_mib": _memory_to_mib(memory),
-                        },
-                        "max_run_duration": f"{max_run_duration}s",
-                        "max_retry_count": max_retry_count,
-                        "environment": {"variables": env},
-                    },
+                    "task_spec": task_spec,
                     "task_count": 1,
                     "parallelism": 1,
                 },

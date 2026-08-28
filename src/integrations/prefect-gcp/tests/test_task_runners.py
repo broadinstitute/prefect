@@ -5,6 +5,7 @@ from google.api_core.exceptions import ServiceUnavailable
 from google.cloud.batch_v1.types import Job, JobStatus
 from prefect_gcp.context import batch_options
 from prefect_gcp.task_runners import GCPBatchTaskRunner
+from prefect_gcp.workers.batch import NFSVolume
 
 from prefect import task
 from prefect.filesystems import LocalFileSystem
@@ -234,6 +235,37 @@ class TestSubmit:
                 _wait_for_watchers(runner)
 
         assert fake_client.create_job.call_count == 1
+
+    def test_submit_mounts_nfs_volumes(self, runner, fake_gcs_storage):
+        job_name = "projects/p/locations/us-central1/jobs/prefect-task-x"
+        fake_client = mock.MagicMock()
+        fake_client.create_job.return_value = _job(job_name, JobStatus.State.SUCCEEDED)
+
+        with mock.patch(
+            "prefect.blocks.core.Block.load", return_value=fake_gcs_storage
+        ):
+            with mock.patch.object(
+                type(runner.credentials), "get_batch_client", return_value=fake_client
+            ):
+                with batch_options(
+                    nfs_volumes=[
+                        NFSVolume(
+                            server="10.0.0.2",
+                            remote_path="/exports/data",
+                            mount_path="/mnt/data",
+                        )
+                    ]
+                ):
+                    runner.submit(add_one, {"x": 41})
+                _wait_for_watchers(runner)
+
+        _, kwargs = fake_client.create_job.call_args
+        task_spec = kwargs["request"].job.task_groups[0].task_spec
+        assert len(task_spec.volumes) == 1
+        volume = task_spec.volumes[0]
+        assert volume.nfs.server == "10.0.0.2"
+        assert volume.nfs.remote_path == "/exports/data"
+        assert volume.mount_path == "/mnt/data"
 
     def test_submit_batch_job_retries_transient_error_then_succeeds(
         self, runner, fake_gcs_storage

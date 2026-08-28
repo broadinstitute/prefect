@@ -11,6 +11,7 @@ from prefect_gcp.workers.batch import (
     GCPBatchJobConfiguration,
     GCPBatchWorker,
     GCPBatchWorkerResult,
+    NFSVolume,
 )
 
 from prefect.client.schemas.objects import FlowRun
@@ -153,6 +154,30 @@ class TestGCPBatchJobConfiguration:
         labels = gcp_batch_job_config.job_body["labels"]
         assert labels["prefect-io-flow-run-id"] == "test-id"
         assert labels["prefect-io-flow-run-name"] == "test-run"
+
+    def test_prepare_for_flow_run_populates_nfs_volumes(self, gcp_batch_job_config):
+        gcp_batch_job_config.nfs_volumes = [
+            NFSVolume(
+                server="10.0.0.2",
+                remote_path="/exports/data",
+                mount_path="/mnt/data",
+            )
+        ]
+        gcp_batch_job_config.prepare_for_flow_run(flow_run=MockFlowRun())
+        task_spec = gcp_batch_job_config.job_body["task_groups"][0]["task_spec"]
+        assert task_spec["volumes"] == [
+            {
+                "nfs": {"server": "10.0.0.2", "remote_path": "/exports/data"},
+                "mount_path": "/mnt/data",
+            }
+        ]
+
+    def test_prepare_for_flow_run_without_nfs_volumes_omits_volumes_key(
+        self, gcp_batch_job_config
+    ):
+        gcp_batch_job_config.prepare_for_flow_run(flow_run=MockFlowRun())
+        task_spec = gcp_batch_job_config.job_body["task_groups"][0]["task_spec"]
+        assert "volumes" not in task_spec
 
     def test_job_body_missing_required_components_raises(
         self, service_account_info
