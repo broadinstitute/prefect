@@ -37,20 +37,25 @@ cloud_storage = ["google-cloud-storage"]
 bigquery = ["google-cloud-bigquery", "google-cloud-bigquery-storage"]
 secret_manager = ["google-cloud-secret-manager"]
 aiplatform = ["google-cloud-aiplatform"]
+batch = ["google-cloud-batch>=0.17.0", "google-cloud-logging>=3.5.0"]
 all_extras = [
   "google-cloud-storage",
   "google-cloud-bigquery",
   "google-cloud-bigquery-storage",
   "google-cloud-secret-manager",
   "google-cloud-aiplatform",
+  "google-cloud-batch",
+  "google-cloud-logging",
 ]
 
 [dependency-groups]
 dev = [
   "coverage",
   "google-cloud-aiplatform",
+  "google-cloud-batch",
   "google-cloud-bigquery-storage",
   "google-cloud-bigquery",
+  "google-cloud-logging",
   "google-cloud-secret-manager",
   "google-cloud-storage",
   "interrogate",

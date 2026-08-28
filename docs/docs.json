@@ -591,6 +591,7 @@
                 "pages": [
                   "integrations/prefect-gcp/index",
                   "integrations/prefect-gcp/gcp-worker-guide",
+                  "integrations/prefect-gcp/gcp-batch-worker-guide",
                   {
                     "anchor": "prefect-gcp-sdk-reference",
                     "group": "SDK Reference",

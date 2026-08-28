@@ -100,6 +100,89 @@ class CloudRunV2WorkerSettings(PrefectBaseSettings):
     )
 
 
+class GCPBatchWorkerSettings(PrefectBaseSettings):
+    """Settings for controlling GCP Batch worker behavior."""
+
+    model_config = build_settings_config(("integrations", "gcp", "batch", "worker"))
+
+    create_job_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "The maximum number of attempts to create a GCP Batch job. "
+            "Increase this value to allow more retries when job creation fails "
+            "due to transient issues like UNAVAILABLE/RESOURCE_EXHAUSTED/INTERNAL "
+            "errors from the Batch API."
+        ),
+    )
+
+    create_job_initial_delay_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "The initial delay in seconds for exponential jitter backoff between "
+            "retries when creating a GCP Batch job."
+        ),
+    )
+
+    create_job_max_delay_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "The maximum delay in seconds for exponential jitter backoff between "
+            "retries when creating a GCP Batch job."
+        ),
+    )
+
+    api_read_retry_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "The maximum number of attempts for retries on read-only GCP Batch "
+            "API calls (job status polling). Increase this value to allow more "
+            "retries when a read fails due to transient issues from the Batch API."
+        ),
+    )
+
+    api_read_retry_initial_delay_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "The initial delay in seconds for exponential jitter backoff between "
+            "retries on read-only GCP Batch API calls."
+        ),
+    )
+
+    api_read_retry_max_delay_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "The maximum delay in seconds for exponential jitter backoff between "
+            "retries on read-only GCP Batch API calls."
+        ),
+    )
+
+    job_watch_poll_interval_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "The number of seconds to wait between polls of a GCP Batch job's "
+            "status while watching it for completion."
+        ),
+    )
+
+
+class GCPBatchSettings(PrefectBaseSettings):
+    """Settings for the GCP Batch integration."""
+
+    model_config = build_settings_config(("integrations", "gcp", "batch"))
+
+    worker: GCPBatchWorkerSettings = Field(
+        description="Settings for controlling GCP Batch worker behavior.",
+        default_factory=GCPBatchWorkerSettings,
+    )
+
+
 class CloudRunV2Settings(PrefectBaseSettings):
     """Settings for the Cloud Run V2 integration."""
 
@@ -119,4 +202,8 @@ class GcpSettings(PrefectBaseSettings):
     cloud_run_v2: CloudRunV2Settings = Field(
         description="Settings for controlling Cloud Run V2 behavior.",
         default_factory=CloudRunV2Settings,
+    )
+    batch: GCPBatchSettings = Field(
+        description="Settings for controlling GCP Batch behavior.",
+        default_factory=GCPBatchSettings,
     )

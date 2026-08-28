@@ -1,0 +1,275 @@
+---
+title: Google Cloud Batch Worker Guide
+keywords: ["Google Cloud Batch", "GCP", "worker", "spot", "preemptible", "virtual machines"]
+---
+
+## Why use Google Cloud Batch for flow run execution?
+
+[Google Cloud Batch](https://cloud.google.com/batch/docs/get-started) runs each flow run as a job on a
+Compute Engine virtual machine. Compared to [Google Cloud Run](/integrations/prefect-gcp/gcp-worker-guide),
+Cloud Batch offers:
+
+1. **The full Compute Engine machine-type catalog**, including machine shapes with far more CPU and
+   memory than Cloud Run supports, and custom machine shapes.
+2. **Spot (preemptible) VMs**, which can substantially reduce compute costs for interruptible workloads.
+3. **Lower cost for long-running or resource-intensive flow runs**, since you pay for a plain Compute
+   Engine VM rather than a managed serverless container.
+
+The tradeoff is that Batch jobs run on VMs rather than a fully serverless container platform, so job
+startup is typically slower than Cloud Run, and there is no built-in HTTP endpoint or autoscaling
+service in front of the job.
+
+## Prerequisites
+
+Before starting this guide, make sure you have:
+
+- A [Google Cloud Platform (GCP) account](https://cloud.google.com/gcp).
+- A project on your GCP account where you have permission to create service accounts and Batch jobs.
+- The `gcloud` CLI installed on your local machine. See Google Cloud's
+  [installation guide](https://cloud.google.com/sdk/docs/install).
+- `prefect-gcp` installed with the `batch` extra:
+
+<CodeGroup>
+
+```bash pip
+pip install -U "prefect-gcp[batch]"
+```
+
+```bash uv
+uv pip install -U "prefect-gcp[batch]"
+```
+
+</CodeGroup>
+
+- A Prefect server instance. You can sign up for a forever free [Prefect Cloud account](https://app.prefect.cloud/)
+  or self-host a Prefect server.
+
+## Step 1. Enable the required APIs
+
+Enable the Batch, Compute Engine, and Cloud Logging APIs on your project:
+
+```bash
+gcloud services enable batch.googleapis.com compute.googleapis.com logging.googleapis.com
+```
+
+## Step 2. Create service accounts and grant IAM roles
+
+A GCP Batch worker involves two distinct identities:
+
+- The **worker's own credentials**, used to submit and manage Batch jobs.
+- The **job's runtime service account**, which the Batch-managed VM runs as (this is what your flow
+  code executes as, and what the Batch agent uses to report task status back to GCP).
+
+### Worker service account
+
+Create a service account for the worker, and grant it permission to manage Batch jobs and act as the
+job's runtime service account:
+
+```bash
+gcloud iam service-accounts create prefect-batch-worker \
+    --display-name="prefect-batch-worker"
+
+gcloud projects add-iam-policy-binding <PROJECT-ID> \
+    --member="serviceAccount:prefect-batch-worker@<PROJECT-ID>.iam.gserviceaccount.com" \
+    --role="roles/batch.jobsEditor"
+
+gcloud iam service-accounts add-iam-policy-binding \
+    prefect-batch-job-runner@<PROJECT-ID>.iam.gserviceaccount.com \
+    --member="serviceAccount:prefect-batch-worker@<PROJECT-ID>.iam.gserviceaccount.com" \
+    --role="roles/iam.serviceAccountUser"
+```
+
+<Tip>
+The last command grants `iam.serviceAccounts.actAs` on the job's runtime service account
+(created next), which the worker needs in order to submit jobs that run as that account.
+</Tip>
+
+### Job runtime service account
+
+Create a separate, least-privilege service account for the job's VMs to run as, and grant it the role
+Batch requires to report task status, plus whatever permissions your flow code needs (for example,
+Cloud Storage or Artifact Registry access):
+
+```bash
+gcloud iam service-accounts create prefect-batch-job-runner \
+    --display-name="prefect-batch-job-runner"
+
+gcloud projects add-iam-policy-binding <PROJECT-ID> \
+    --member="serviceAccount:prefect-batch-job-runner@<PROJECT-ID>.iam.gserviceaccount.com" \
+    --role="roles/batch.agentReporter"
+
+# Example: grant read access to Artifact Registry if your flow image is stored there
+gcloud projects add-iam-policy-binding <PROJECT-ID> \
+    --member="serviceAccount:prefect-batch-job-runner@<PROJECT-ID>.iam.gserviceaccount.com" \
+    --role="roles/artifactregistry.reader"
+```
+
+If you don't set a runtime service account on the work pool's job variables, Batch runs jobs as the
+project's default Compute Engine service account instead, which is broader than necessary for
+production use.
+
+## Step 3. Create a GCP Batch work pool
+
+Create a work pool of type `gcp-batch`:
+
+```bash
+prefect work-pool create --type gcp-batch <WORK-POOL-NAME>
+```
+
+Open the work pool in the Prefect UI and edit its base job template. At minimum, set:
+
+- **Region** — the GCP region to run jobs in (for example, `us-central1`).
+- **Credentials** — a `GCP Credentials` block for `prefect-batch-worker`, or leave unset to use
+  [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
+  if the worker runs on GCP infrastructure that already has that identity attached.
+- **Service Account Email** — `prefect-batch-job-runner@<PROJECT-ID>.iam.gserviceaccount.com`.
+
+### Job variables reference
+
+| Variable | Description |
+| --- | --- |
+| `image` | The container image to run. Defaults to the Prefect image. |
+| `machine_type` | A specific Compute Engine machine type (e.g. `e2-standard-4`). If unset, Batch chooses a machine type based on `cpu`/`memory`. |
+| `cpu` | CPU to request per task, in millicores (e.g. `1000m` for one vCPU). |
+| `memory` | Memory to request per task (e.g. `512Mi`, `2Gi`). |
+| `provisioning_model` | `standard` or `spot`. Spot VMs are substantially cheaper but may be preempted. |
+| `max_retry_count` | Number of times Batch retries a failed task — set this above `0` when using `spot` so preempted tasks are retried automatically. |
+| `max_run_duration` | Maximum seconds a task may run before Batch marks it failed. |
+| `boot_disk_size_gb` | Boot disk size, in GB, for each VM. |
+| `service_account_email` | The job runtime service account described above. |
+| `network` / `subnetwork` | VPC network/subnetwork to run VMs on. |
+| `allowed_locations` | Restrict VMs to specific zones (e.g. `["zones/us-central1-a"]`). Leaving this unset generally improves scheduling speed. |
+| `keep_job` | Keep the completed Batch job in GCP after the flow run finishes, for debugging. |
+
+<Warning>
+**Spot VM preemption**
+
+When a spot VM is preempted, GCP Batch reports it as an ordinary task failure (exit code `50001`)
+rather than a distinct job state. The worker detects this and logs it explicitly, but Prefect will
+still mark the flow run as failed unless `max_retry_count` is set high enough for Batch itself to
+retry the task, or you configure [flow-level retries](/v3/develop/write-flows#retries).
+</Warning>
+
+## Step 4. Deploy a GCP Batch worker
+
+Start a worker polling your new work pool. This can run anywhere with network access to the Prefect
+API and the credentials described above — a local machine, a container, or a Compute Engine VM:
+
+```bash
+export PREFECT_API_URL='https://api.prefect.cloud/api/accounts/<ACCOUNT-ID>/workspaces/<WORKSPACE-ID>'
+export PREFECT_API_KEY='<YOUR-API-KEY>'
+
+prefect worker start --pool <WORK-POOL-NAME> --type gcp-batch
+```
+
+## Step 5. Deploy and run a flow
+
+Deploying a flow to a `gcp-batch` work pool works the same way as any other worker-based work pool —
+see the [Cloud Run worker guide](/integrations/prefect-gcp/gcp-worker-guide#step-4-deploy-a-flow) for a
+walkthrough of building a Docker image, pushing it to Artifact Registry, and deploying with a
+`prefect.yaml` file. Point `work_pool.name` at your `gcp-batch` work pool instead.
+
+Once deployed, trigger a flow run from the UI or with `prefect deployment run`. You'll see a new job
+appear under [Batch jobs](https://console.cloud.google.com/batch/jobs) in the Google Cloud console
+while the flow run executes.
+
+## Per-task heterogeneous compute with `GCPBatchTaskRunner`
+
+Everything above dispatches a whole flow run to a single Batch job with one fixed machine
+shape. For workloads that need **different** machine types or spot/standard provisioning
+per task within the same flow run, use `GCPBatchTaskRunner` instead: each `@task.submit()`
+call launches its own Batch job, and the `batch_options()` context manager overrides the
+task runner's defaults for tasks submitted within the block.
+
+`GCPBatchTaskRunner` needs a saved storage block (e.g. a `GcsBucket`) to exchange task
+parameters with each Batch container:
+
+```python
+from prefect_gcp import GcsBucket, GcpCredentials
+
+GcsBucket(
+    bucket="my-bucket",
+    gcp_credentials=GcpCredentials.load("CREDENTIALS-BLOCK-NAME"),
+).save("my-batch-task-storage")
+```
+
+```python
+from prefect import flow, task
+from prefect.task_runners import ThreadPoolTaskRunner
+from prefect_gcp.task_runners import GCPBatchTaskRunner
+from prefect_gcp.context import batch_options
+
+@task
+def process(x: int) -> int:
+    return x + 1
+
+@task
+def quick_lookup(x: int) -> int:
+    return x * 2
+
+@flow(task_runner=ThreadPoolTaskRunner())
+def my_flow():
+    # By default, tasks run locally in threads via the flow's default
+    # ThreadPoolTaskRunner - no VM, no cold start.
+    quick = quick_lookup.submit(3)
+
+    # Only tasks that specifically need Batch's heterogeneous compute are
+    # submitted directly to a GCPBatchTaskRunner, each landing on its own VM.
+    with GCPBatchTaskRunner(
+        region="us-central1",
+        result_storage_block="gcs-bucket/my-batch-task-storage",
+    ) as batch_runner:
+        with batch_options(machine_type="n2-standard-8", max_attempts_spot=3):
+            heavy = batch_runner.submit(process, {"x": 42})
+        with batch_options(cpu="1000m", memory="512Mi"):
+            light = batch_runner.submit(process, {"x": 1})
+
+    return heavy.result(), light.result(), quick.result()
+```
+
+Submitting a task directly to a task runner instance (rather than calling `.submit()` on the
+task itself) bypasses the flow's default task runner for that call, so you can mix
+Batch-backed tasks with locally-executed ones in the same flow run - use `GCPBatchTaskRunner`
+only for the tasks that need it.
+
+### Spot VMs with a standard fallback
+
+Set `max_attempts_spot` above `0` to try a task on cheaper, preemptible spot VMs first. If a
+task's spot VM is preempted repeatedly and exhausts `max_attempts_spot`, the task runner
+automatically submits a new Batch job for the same task on a standard VM, retrying up to
+`max_attempts_standard` times there. `max_attempts_standard` defaults to `1` and must always be
+at least `1` - every task gets at least one non-preemptible attempt, so a permanently
+capacity-constrained spot pool can't strand a task with no attempts left.
+
+<Note>
+**A fully exhausted task's result may not resolve**
+
+If every attempt (spot and standard) fails before the container ever starts running the task
+- for example, every VM fails to provision - no result is ever recorded for that task run, and
+calling `.result()` on its future will not return. This is an existing limitation of any
+infrastructure-level failure that occurs before a task starts; requiring at least one standard
+attempt substantially reduces, but does not eliminate, the chance of hitting it.
+</Note>
+
+<Warning>
+**Tasks must be defined at module level**
+
+Each Batch container reconstructs the task from a `module:function` import path, so the
+container's image must already contain the code defining the task (the same requirement as
+any worker image running `prefect flow-run execute`), and the task cannot be a closure or
+locally-defined function.
+</Warning>
+
+<Note>
+**This trades cold-start latency for heterogeneity**
+
+Each `.submit()` call provisions its own VM (tens of seconds to minutes of cold-start), so
+`GCPBatchTaskRunner` fits coarse-grained, long-running, heterogeneous tasks rather than
+fine-grained parallel fan-out. For homogeneous parallelism across many small tasks, prefer
+the `GCPBatchWorker`'s native `task_count`/`parallelism`, or another task runner.
+</Note>
+
+If you're fine with subflow-level (rather than task-level) granularity, you can also get
+heterogeneous infrastructure today with zero additional code by decorating separate
+`@flow`s bound to different work pools — see
+[Submit flows directly to dynamic infrastructure](/v3/advanced/submit-flows-directly-to-dynamic-infrastructure).

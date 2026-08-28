@@ -36,6 +36,11 @@ except ModuleNotFoundError:
     pass
 
 try:
+    from google.cloud.batch_v1 import BatchServiceAsyncClient, BatchServiceClient
+except ModuleNotFoundError:
+    pass
+
+try:
     from google.api_core.client_options import ClientOptions, from_dict
 except ModuleNotFoundError:
     pass
@@ -79,6 +84,7 @@ class ClientType(Enum):
     BIGQUERY = "bigquery"
     SECRET_MANAGER = "secret_manager"
     AIPLATFORM = "job_service"  # vertex ai
+    BATCH = "batch"
 
 
 @functools.lru_cache(maxsize=8, typed=True)
@@ -555,4 +561,72 @@ class GcpCredentials(CredentialsBlock):
 
         return _get_job_service_async_client_cached(
             self, tuple(client_options.__dict__.items())
+        )
+
+    @_raise_help_msg("batch")
+    def get_batch_client(
+        self, client_options: Union[Dict[str, Any], ClientOptions] = None
+    ) -> "BatchServiceClient":
+        """
+        Gets an authenticated Batch Service client.
+
+        Returns:
+            An authenticated Batch Service client.
+
+        Examples:
+            Gets a GCP Batch Service client from a path.
+            ```python
+            from prefect import flow
+            from prefect_gcp.credentials import GcpCredentials
+
+            @flow()
+            def example_get_client_flow():
+                service_account_file = "~/.secrets/prefect-service-account.json"
+                client = GcpCredentials(
+                    service_account_file=service_account_file
+                ).get_batch_client()
+
+            example_get_client_flow()
+            ```
+        """
+        if isinstance(client_options, dict):
+            client_options = from_dict(client_options)
+
+        credentials = self.get_credentials_from_service_account()
+        return BatchServiceClient(
+            credentials=credentials, client_options=client_options
+        )
+
+    @_raise_help_msg("batch")
+    def get_batch_async_client(
+        self, client_options: Union[Dict[str, Any], ClientOptions] = None
+    ) -> "BatchServiceAsyncClient":
+        """
+        Gets an authenticated Batch Service async client.
+
+        Returns:
+            An authenticated Batch Service async client.
+
+        Examples:
+            Gets a GCP Batch Service async client from a path.
+            ```python
+            from prefect import flow
+            from prefect_gcp.credentials import GcpCredentials
+
+            @flow()
+            def example_get_client_flow():
+                service_account_file = "~/.secrets/prefect-service-account.json"
+                client = GcpCredentials(
+                    service_account_file=service_account_file
+                ).get_batch_async_client()
+
+            example_get_client_flow()
+            ```
+        """
+        if isinstance(client_options, dict):
+            client_options = from_dict(client_options)
+
+        credentials = self.get_credentials_from_service_account()
+        return BatchServiceAsyncClient(
+            credentials=credentials, client_options=client_options
         )

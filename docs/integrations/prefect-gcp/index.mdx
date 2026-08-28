@@ -63,6 +63,9 @@ pip install -U "prefect-gcp[secret_manager]"
 
 # Use Vertex AI
 pip install -U "prefect-gcp[aiplatform]"
+
+# Use GCP Batch
+pip install -U "prefect-gcp[batch]"
 ```
 
 ```bash uv
@@ -77,6 +80,9 @@ uv pip install -U "prefect-gcp[secret_manager]"
 
 # Use Vertex AI
 uv pip install -U "prefect-gcp[aiplatform]"
+
+# Use GCP Batch
+uv pip install -U "prefect-gcp[batch]"
 ```
 
 </CodeGroup>
@@ -176,13 +182,15 @@ gcs_bucket.save("GCS-BLOCK-NAME")
 
 ```
 
-## Run flows on Google Cloud Run or Vertex AI
+## Run flows on Google Cloud Run, Vertex AI, or GCP Batch
 
-Run flows on [Google Cloud Run](https://cloud.google.com/run) or [Vertex AI](https://cloud.google.com/vertex-ai) to dynamically scale your infrastructure.
+Run flows on [Google Cloud Run](https://cloud.google.com/run), [Vertex AI](https://cloud.google.com/vertex-ai), or [Google Cloud Batch](https://cloud.google.com/batch) to dynamically scale your infrastructure.
 
 Prefect Cloud offers [Google Cloud Run push work pools](/v3/how-to-guides/deployment_infra/serverless). Push work pools submit runs directly to Google Cloud Run, instead of requiring a worker to actively poll for flow runs to execute.
 
 See the [Google Cloud Run Worker Guide](/integrations/prefect-gcp/gcp-worker-guide) for a walkthrough of using Google Cloud Run in a hybrid work pool.
+
+For workloads that need machine types, CPU/memory shapes, or spot VMs beyond what Cloud Run supports, see the [Google Cloud Batch Worker Guide](/integrations/prefect-gcp/gcp-batch-worker-guide).
 
 
 ## Examples
