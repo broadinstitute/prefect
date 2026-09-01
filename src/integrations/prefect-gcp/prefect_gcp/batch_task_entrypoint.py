@@ -56,8 +56,14 @@ def main(argv: list[str] | None = None) -> int:
 
     task_run_id = UUID(args.task_run_id)
     task = import_object(args.entrypoint)
-
     block = Block.load(args.result_storage_block)
+    # The submitting process fetches this task's result in a later, separate
+    # process via the API, so the result must be persisted - the same
+    # requirement `TaskWorker` applies - and to storage reachable from both
+    # sides, rather than the default local filesystem storage, which only
+    # exists inside this container.
+    task = task.with_options(persist_result=True, result_storage=block)
+
     result_store = ResultStore(result_storage=block)
     run_data = run_coro_as_sync(read_parameters(result_store, task_run_id))
 
