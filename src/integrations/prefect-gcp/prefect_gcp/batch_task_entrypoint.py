@@ -61,8 +61,16 @@ def main(argv: list[str] | None = None) -> int:
     # process via the API, so the result must be persisted - the same
     # requirement `TaskWorker` applies - and to storage reachable from both
     # sides, rather than the default local filesystem storage, which only
-    # exists inside this container.
-    task = task.with_options(persist_result=True, result_storage=block)
+    # exists inside this container. Respect a `result_storage` the task
+    # already declares (e.g. for caching to a specific block) rather than
+    # forcing it to the task runner's own parameter-exchange block.
+    with_options_kwargs: dict[str, object] = {}
+    if task.persist_result is None:
+        with_options_kwargs["persist_result"] = True
+    if task.result_storage is None:
+        with_options_kwargs["result_storage"] = block
+    if with_options_kwargs:
+        task = task.with_options(**with_options_kwargs)
 
     result_store = ResultStore(result_storage=block)
     run_data = run_coro_as_sync(read_parameters(result_store, task_run_id))
