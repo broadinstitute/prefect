@@ -7,6 +7,7 @@ import pytest
 
 from prefect.cache_policies import (
     DEFAULT,
+    INPUTS_AND_FILE_CONTENTS,
     CachePolicy,
     CompoundCachePolicy,
     Inputs,
@@ -146,6 +147,78 @@ class TestInputsPolicy:
                 task_ctx=None, inputs={"x": 42, "y": val}, flow_parameters=None
             )
             assert new_key == key
+
+    def test_hash_files_defaults_to_false_and_ignores_file_contents(self, tmp_path):
+        policy = Inputs()
+
+        path_a = tmp_path / "a.txt"
+        path_b = tmp_path / "b.txt"
+        path_a.write_text("same contents")
+        path_b.write_text("same contents")
+
+        # different paths, identical contents -> different keys (path, not
+        # contents, is being hashed)
+        key_a = policy.compute_key(
+            task_ctx=None, inputs={"f": path_a}, flow_parameters=None
+        )
+        key_b = policy.compute_key(
+            task_ctx=None, inputs={"f": path_b}, flow_parameters=None
+        )
+        assert key_a != key_b
+
+        # same path, changed contents -> same key
+        key_before = policy.compute_key(
+            task_ctx=None, inputs={"f": path_a}, flow_parameters=None
+        )
+        path_a.write_text("different contents")
+        key_after = policy.compute_key(
+            task_ctx=None, inputs={"f": path_a}, flow_parameters=None
+        )
+        assert key_before == key_after
+
+    def test_hash_files_true_hashes_file_contents(self, tmp_path):
+        policy = Inputs(hash_files=True)
+
+        path_a = tmp_path / "a.txt"
+        path_b = tmp_path / "b.txt"
+        path_a.write_text("same contents")
+        path_b.write_text("same contents")
+
+        # different paths, identical contents -> same key
+        key_a = policy.compute_key(
+            task_ctx=None, inputs={"f": path_a}, flow_parameters=None
+        )
+        key_b = policy.compute_key(
+            task_ctx=None, inputs={"f": path_b}, flow_parameters=None
+        )
+        assert key_a == key_b
+
+        # same path, changed contents -> different key
+        path_a.write_text("different contents")
+        key_after = policy.compute_key(
+            task_ctx=None, inputs={"f": path_a}, flow_parameters=None
+        )
+        assert key_after != key_a
+
+    def test_hash_files_true_raises_clear_error_for_missing_file(self, tmp_path):
+        policy = Inputs(hash_files=True)
+        missing = tmp_path / "does-not-exist.txt"
+
+        with pytest.raises(ValueError, match="Could not hash file contents"):
+            policy.compute_key(
+                task_ctx=None, inputs={"f": missing}, flow_parameters=None
+            )
+
+    def test_hash_files_flag_is_preserved_when_compounded(self, tmp_path):
+        policy = Inputs(hash_files=True) + Inputs(exclude=["y"])
+
+        [merged] = [p for p in policy.policies if isinstance(p, Inputs)]
+        assert merged.hash_files is True
+        assert merged.exclude == ["y"]
+
+    def test_inputs_and_file_contents_singleton(self):
+        assert isinstance(INPUTS_AND_FILE_CONTENTS, Inputs)
+        assert INPUTS_AND_FILE_CONTENTS.hash_files is True
 
 
 class TestCompoundPolicy:

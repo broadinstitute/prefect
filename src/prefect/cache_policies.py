@@ -1,4 +1,5 @@
 import inspect
+import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from logging import Logger
@@ -18,7 +19,7 @@ from typing_extensions import Self
 from prefect.context import TaskRunContext
 from prefect.exceptions import HashError
 from prefect.logging import get_logger
-from prefect.utilities.hashing import hash_objects
+from prefect.utilities.hashing import file_hash, hash_objects
 
 if TYPE_CHECKING:
     from prefect.filesystems import WritableFileSystem
@@ -202,9 +203,13 @@ class CompoundCachePolicy(CachePolicy):
         self.policies = [p for p in self.policies if not isinstance(p, Inputs)]
         if inputs_policies:
             all_excludes: set[str] = set()
+            any_hash_files = False
             for inputs_policy in inputs_policies:
                 all_excludes.update(inputs_policy.exclude)
-            self.policies.append(Inputs(exclude=sorted(all_excludes)))
+                any_hash_files = any_hash_files or inputs_policy.hash_files
+            self.policies.append(
+                Inputs(exclude=sorted(all_excludes), hash_files=any_hash_files)
+            )
 
     def compute_key(
         self,
@@ -359,9 +364,17 @@ class RunId(CachePolicy):
 class Inputs(CachePolicy):
     """
     Policy that computes a cache key based on a hash of the runtime inputs provided to the task..
+
+    Args:
+        exclude: Names of inputs to exclude from the cache key.
+        hash_files: If `True`, any input that is a `pathlib.Path`/`os.PathLike` is hashed by its
+            *file contents* instead of the path object itself, so a changed file at a stable path
+            correctly invalidates the cache. Defaults to `False`, in which case such inputs are
+            hashed like any other input (i.e. keyed on the path, not the file's contents).
     """
 
     exclude: list[str] = field(default_factory=lambda: [])
+    hash_files: bool = False
 
     def compute_key(
         self,
@@ -379,8 +392,17 @@ class Inputs(CachePolicy):
 
         for key, val in inputs.items():
             if key not in exclude:
-                transformer = STABLE_TRANSFORMS.get(type(val))  # type: ignore[reportUnknownMemberType]
-                hashed_inputs[key] = transformer(val) if transformer else val
+                if self.hash_files and isinstance(val, os.PathLike):
+                    try:
+                        hashed_inputs[key] = file_hash(os.fspath(val))
+                    except OSError as exc:
+                        raise ValueError(
+                            f"Could not hash file contents for cache key input "
+                            f"{key!r} at {val!r}: {exc}"
+                        ) from exc
+                else:
+                    transformer = STABLE_TRANSFORMS.get(type(val))  # type: ignore[reportUnknownMemberType]
+                    hashed_inputs[key] = transformer(val) if transformer else val
 
         try:
             return hash_objects(hashed_inputs, raise_on_failure=True)
@@ -404,6 +426,7 @@ class Inputs(CachePolicy):
 _register_stable_transforms()
 
 INPUTS = Inputs()
+INPUTS_AND_FILE_CONTENTS = Inputs(hash_files=True)
 NONE = _None()
 NO_CACHE = _None()
 TASK_SOURCE = TaskSource()
