@@ -47,10 +47,12 @@ from uuid import uuid4
 
 from typing_extensions import Self
 
+from prefect.client.orchestration import get_client
 from prefect.client.schemas.objects import RunInput
-from prefect.context import serialize_context
+from prefect.context import FlowRunContext, serialize_context
 from prefect.futures import PrefectDistributedFuture, PrefectFuture
 from prefect.settings import get_current_settings
+from prefect.states import Pending
 from prefect.task_runners import TaskRunner
 from prefect.tasks import Task
 from prefect.utilities.asyncutils import run_coro_as_sync
@@ -258,6 +260,29 @@ class GCPBatchTaskRunner(TaskRunner[PrefectDistributedFuture[R]]):
             "max_attempts_standard", self.max_attempts_standard
         )
         _validate_attempt_counts(max_attempts_spot, max_attempts_standard)
+
+        # `PrefectDistributedFuture` (returned below) assumes the task run it
+        # points to already exists server-side as soon as it's returned - the
+        # same contract `Task.apply_async` upholds by calling
+        # `client.create_task_run` before constructing its future. Without
+        # this, a caller that calls `.result()`/`.wait()` right after
+        # `submit()` races the GCP Batch container (which otherwise creates
+        # this row itself once it starts, tens of seconds to minutes later)
+        # and gets `ObjectNotFound` instead of waiting.
+        flow_run_context = FlowRunContext.get()
+        with get_client(sync_client=True) as client:
+            client.create_task_run(
+                task=task,
+                flow_run_id=(
+                    flow_run_context.flow_run.id
+                    if flow_run_context and flow_run_context.flow_run
+                    else None
+                ),
+                dynamic_key=str(task_run_id),
+                id=task_run_id,
+                state=Pending(),
+                task_inputs=task_inputs,
+            )
 
         self._store_run_data(
             task_run_id=task_run_id,

@@ -1,4 +1,5 @@
 from unittest import mock
+from uuid import uuid4
 
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
@@ -32,8 +33,12 @@ def _wait_for_watchers(runner: GCPBatchTaskRunner) -> None:
 def fake_gcs_storage(tmp_path):
     """Stand-in for the GCS block used to exchange parameters: a real
     `WritableFileSystem` block (so it passes `ResultStore` validation), backed by
-    a local temp dir instead of GCS."""
-    return LocalFileSystem(basepath=str(tmp_path))
+    a local temp dir instead of GCS. Also stands in for `batch_task_entrypoint`'s
+    default result-storage block, which requires a persisted (i.e.
+    `_block_document_id`-bearing) block."""
+    block = LocalFileSystem(basepath=str(tmp_path))
+    block._block_document_id = uuid4()
+    return block
 
 
 @pytest.fixture
@@ -117,6 +122,36 @@ class TestSubmit:
                     ValueError, match="max_attempts_standard must be >= 1"
                 ):
                     runner.submit(add_one, {"x": 41})
+
+    def test_submit_creates_the_task_run_before_returning(
+        self, runner, fake_gcs_storage
+    ):
+        """
+        `PrefectDistributedFuture` assumes its task run already exists
+        server-side as soon as it's constructed - `.wait()`/`.result()` read it
+        immediately and raise `ObjectNotFound` if it's missing, with no
+        tolerance for the row not existing yet. A caller that calls
+        `.result()` right after `submit()` would otherwise race the GCP Batch
+        container, which only creates this row once it starts running (tens of
+        seconds to minutes later).
+        """
+        from prefect.client.orchestration import get_client
+
+        job_name = "projects/p/locations/us-central1/jobs/prefect-task-x"
+        fake_client = mock.MagicMock()
+        fake_client.create_job.return_value = _job(job_name, JobStatus.State.SUCCEEDED)
+
+        with mock.patch(
+            "prefect.blocks.core.Block.load", return_value=fake_gcs_storage
+        ):
+            with mock.patch.object(
+                type(runner.credentials), "get_batch_client", return_value=fake_client
+            ):
+                future = runner.submit(add_one, {"x": 41})
+                with get_client(sync_client=True) as client:
+                    task_run = client.read_task_run(task_run_id=future.task_run_id)
+                assert task_run.id == future.task_run_id
+                _wait_for_watchers(runner)
 
     def test_submit_stores_parameters_and_creates_job(self, runner, fake_gcs_storage):
         job_name = "projects/p/locations/us-central1/jobs/prefect-task-x"
