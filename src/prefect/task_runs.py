@@ -113,12 +113,17 @@ class TaskRunWaiter:
         self._started = True
 
     async def _consume_events(self, consumer_started: asyncio.Event):
+        # A cache hit keeps `StateType.COMPLETED` but renames the state to
+        # "Cached" (see `task_engine.py`'s `handle_success`), so the default
+        # type-derived names below miss it unless we add it explicitly.
+        terminal_state_names = [
+            state.name.title() for state in TERMINAL_STATES
+        ] + ["Cached"]
         async with get_events_subscriber(
             filter=EventFilter(
                 event=EventNameFilter(
                     name=[
-                        f"prefect.task-run.{state.name.title()}"
-                        for state in TERMINAL_STATES
+                        f"prefect.task-run.{name}" for name in terminal_state_names
                     ],
                 )
             )

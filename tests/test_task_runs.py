@@ -83,6 +83,39 @@ class TestTaskRunWaiter:
 
     @pytest.mark.timeout(20)
     @pytest.mark.usefixtures("use_hosted_api_server")
+    async def test_wait_for_task_run_handles_cache_hit(
+        self, prefect_client, emitting_events_pipeline
+    ):
+        """A cache hit renames a `COMPLETED` task run's state to "Cached" rather
+        than "Completed" - the event filter must still catch it, or callers waiting
+        on the future (e.g. `PrefectDistributedFuture.wait_async`) hang forever."""
+
+        @task(cache_key_fn=lambda *_, **__: "same-key", persist_result=True)
+        async def cached_task():
+            return 1
+
+        first_run_id = uuid.uuid4()
+        await run_task_async(task=cached_task, task_run_id=first_run_id)
+        await emitting_events_pipeline.process_events()
+
+        second_run_id = uuid.uuid4()
+        asyncio.create_task(
+            run_task_async(task=cached_task, task_run_id=second_run_id)
+        )
+
+        state = await TaskRunWaiter.wait_for_task_run(second_run_id)
+
+        await emitting_events_pipeline.process_events()
+
+        assert state is not None
+        assert state.name == "Cached"
+        assert state.is_completed()
+
+        task_run = await prefect_client.read_task_run(second_run_id)
+        assert task_run.state.is_completed()
+
+    @pytest.mark.timeout(20)
+    @pytest.mark.usefixtures("use_hosted_api_server")
     async def test_handles_concurrent_task_runs(
         self, prefect_client, emitting_events_pipeline
     ):
